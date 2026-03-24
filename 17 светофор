@@ -1,69 +1,78 @@
 import cv2
 import numpy as np
 
-# Путь к вашему видео
-video_path = r"C:\Users\26\Desktop\Day1\TraficControl\for_pub\robot_2026-03-13_11-11-07.avi"
+# Путь к видео
+video_path = r"C:\Users\26\Desktop\Day1\TraficControl\for_pub\robot_2026-03-13_11-16-27.avi"
 cap = cv2.VideoCapture(video_path)
+ 
+# Диапазоны HSV
+yellow_low, yellow_high = np.array([20, 100, 100]), np.array([35, 255, 255])
+red_low1, red_high1 = np.array([0, 150, 100]), np.array([10, 255, 255])
+red_low2, red_high2 = np.array([160, 150, 100]), np.array([180, 255, 255])
+green_low, green_high = np.array([40, 100, 100]), np.array([90, 255, 255])
 
-# Настройки цветовых диапазонов HSV (могут требовать подстройки под освещение)
-yellow_lower = np.array([20, 100, 100])
-yellow_upper = np.array([30, 255, 255])
-
-red_lower1 = np.array([0, 100, 100])
-red_upper1 = np.array([10, 255, 255])
-red_lower2 = np.array([160, 100, 100])
-red_upper2 = np.array([180, 255, 255])
-green_lower = np.array([40, 50, 50])
-green_upper = np.array([90, 255, 255])
-
-def get_mask_coords(mask, min_area=500):
-    """Находит контуры и возвращает координаты самой большой области"""
+def get_signal_info(mask, min_area=150):
+    kernel = np.ones((3,3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
-        largest = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(largest) > min_area:
-            return cv2.boundingRect(largest)
-    return None
+        c = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(c)
+        if area > min_area:
+            return cv2.boundingRect(c), area
+    return None, 0
 
 while cap.isOpened():
     ret, frame = cap.read()
-    if not ret:
-        break
+    if not ret: break
 
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-    # 1. Детекция желтой стоп-линии
-    yellow_mask = cv2.inRange(hsv, yellow_lower, yellow_upper)
-    line_box = get_mask_coords(yellow_mask, min_area=1000)
-    
-    # Считаем, что робот "у линии", если она находится в нижней части кадра
+    # 1. Линия (Желтая)
+    mask_y = cv2.inRange(hsv, yellow_low, yellow_high)
+    line_box, _ = get_signal_info(mask_y, 1000)
     at_line = False
     if line_box:
-        x, y, w, h = line_box
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 255), 2) # Рисуем линию
-        if y + h > frame.shape[0] * 0.7: # Линия в нижней 30% части экрана
+        lx, ly, lw, lh = line_box
+        cv2.rectangle(frame, (lx, ly), (lx+lw, ly+lh), (0, 255, 255), 2)
+        if (ly + lh) > frame.shape[0] * 0.65:
             at_line = True
 
-    # 2. Детекция сигналов светофора
-    mask_r = cv2.add(cv2.inRange(hsv, red_lower1, red_upper1), cv2.inRange(hsv, red_lower2, red_upper2))
-    mask_g = cv2.inRange(hsv, green_lower, green_upper)
+    # 2. Светофор
+    mask_r = cv2.add(cv2.inRange(hsv, red_low1, red_high1), cv2.inRange(hsv, red_low2, red_high2))
+    mask_g = cv2.inRange(hsv, green_low, green_high)
 
-    red_box = get_mask_coords(mask_r, min_area=200)
-    green_box = get_mask_coords(mask_g, min_area=200)
+    r_box, r_area = get_signal_info(mask_r)
+    g_box, g_area = get_signal_info(mask_g)
 
-    # 3. Логика отображения надписей
-    if at_line:
-        if red_box:
-            x, y, w, h = red_box
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2) # Рамка светофора
-            cv2.putText(frame, "STOP", (50, 150), cv2.FONT_HERSHEY_DUPLEX, 3, (0, 0, 255), 5)
-        elif green_box:
-            x, y, w, h = green_box
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2) # Рамка светофора
-            cv2.putText(frame, "GO!", (50, 150), cv2.FONT_HERSHEY_DUPLEX, 3, (0, 255, 0), 5)
+    # Логика отрисовки
+    if r_area > g_area or g_area > r_area:
+        # 1. Определяем координаты активного сигнала (внутренняя рамка)
+        x, y, w, h = r_box if r_area > g_area else g_box
+        signal_color = (0, 0, 255) if r_area > g_area else (0, 255, 0)
+        
+        # Рисуем рамку вокруг ЦВЕТА (красная или зеленая)
+        cv2.rectangle(frame, (x, y), (x + w, y + h), signal_color, 2)
 
-    cv2.imshow('Traffic Control System', frame)
-    if cv2.waitKey(25) & 0xFF == ord('q'):
+        # 2. Математически рассчитываем рамку для ВСЕГО КОРПУСА (синяя)
+        # Увеличиваем ширину и высоту, чтобы охватить весь черный пластик
+        offset_w = int(w * 0.6)
+        if r_area > g_area: # Если горит верхний (красный)
+            # Тянем рамку вниз
+            cv2.rectangle(frame, (x - offset_w, y - int(h*0.5)), (x + w + offset_w, y + int(h*4.5)), (255, 0, 0), 3)
+        else: # Если горит нижний (зеленый)
+            # Тянем рамку вверх
+            cv2.rectangle(frame, (x - offset_w, y - int(h*4.5)), (x + w + offset_w, y + int(h*0.5)), (255, 0, 0), 3)
+
+        # 3. Вывод текста (только у линии)
+        if at_line:
+            text = "STOP" if r_area > g_area else "GO!"
+            t_color = (0, 0, 255) if r_area > g_area else (0, 255, 0)
+            cv2.putText(frame, text, (150, 200), cv2.FONT_HERSHEY_DUPLEX, 5, t_color, 10)
+
+    cv2.imshow('Traffic Control Fixed', frame)
+
+    if cv2.waitKey(40) & 0xFF == ord('q'):
         break
 
 cap.release()
