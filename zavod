@@ -1,0 +1,73 @@
+import cv2
+import numpy as np
+
+# Путь к видео
+video_path = r"C:\Users\26\Desktop\Day1\TraficControl\for_pub\robot_2026-03-13_11-16-27.avi"
+cap = cv2.VideoCapture(video_path)
+
+# Уточненные диапазоны HSV
+# Желтая линия
+yellow_low, yellow_high = np.array([20, 100, 100]), np.array([35, 255, 255])
+
+# Красный (расширен для яркости)
+red_low1, red_high1 = np.array([0, 150, 100]), np.array([10, 255, 255])
+red_low2, red_high2 = np.array([160, 150, 100]), np.array([180, 255, 255])
+
+# Зеленый (сделан более "жадным" до ярких огней)
+green_low, green_high = np.array([40, 100, 100]), np.array([90, 255, 255])
+
+def get_signal_info(mask, min_area=150):
+    """Возвращает координаты и площадь самого крупного пятна цвета"""
+    kernel = np.ones((3,3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        c = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(c)
+        if area > min_area:
+            return cv2.boundingRect(c), area
+    return None, 0
+
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret: break
+
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+    # 1. Линия
+    mask_y = cv2.inRange(hsv, yellow_low, yellow_high)
+    line_box, _ = get_signal_info(mask_y, 1000)
+    at_line = False
+    if line_box:
+        lx, ly, lw, lh = line_box
+        cv2.rectangle(frame, (lx, ly), (lx+lw, ly+lh), (0, 255, 255), 2)
+        if (ly + lh) > frame.shape[0] * 0.65:
+            at_line = True
+
+    # 2. Светофор (сравнение площадей для исключения ошибок)
+    mask_r = cv2.add(cv2.inRange(hsv, red_low1, red_high1), cv2.inRange(hsv, red_low2, red_high2))
+    mask_g = cv2.inRange(hsv, green_low, green_high)
+
+    r_box, r_area = get_signal_info(mask_r)
+    g_box, g_area = get_signal_info(mask_g)
+
+    # Выбираем тот сигнал, чья площадь больше (защита от "фантомного" красного)
+    if r_area > g_area:
+        rx, ry, rw, rh = r_box
+        cv2.rectangle(frame, (rx, ry), (rx+rw, ry+rh), (0, 0, 255), 3)
+        if at_line:
+            cv2.putText(frame, "STOP", (150, 200), cv2.FONT_HERSHEY_DUPLEX, 5, (0, 0, 255), 10)
+    elif g_area > r_area:
+        gx, gy, gw, gh = g_box
+        cv2.rectangle(frame, (gx, gy), (gx+gw, gy+gh), (0, 255, 0), 3)
+        if at_line:
+            cv2.putText(frame, "GO!", (150, 200), cv2.FONT_HERSHEY_DUPLEX, 5, (0, 255, 0), 10)
+
+    cv2.imshow('Traffic Control Fixed', frame)
+
+    # Скорость: 40 мс — комфортный просмотр (чуть быстрее, чем было)
+    if cv2.waitKey(40) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
